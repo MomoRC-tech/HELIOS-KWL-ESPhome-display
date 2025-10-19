@@ -12,8 +12,6 @@ i2c:
   scan: true
   frequency: 100kHz
 
-
-
 ##################################################################################
 ## Home assistant Configuration
 # Enable logging
@@ -52,15 +50,7 @@ binary_sensor:
     id: encoder_button
 
 sensor:
-  - platform: wifi_signal
-    name: "WiFi RSSI"
-    id: wifi_rssi
-    update_interval: 15s
-
-  - platform: uptime
-    name: "Uptime Seconds"
-    id: uptime_s
-
+  # Rotary encoder
   - platform: rotary_encoder
     name: "Rotary Encoder"
     id: my_encoder
@@ -73,6 +63,46 @@ sensor:
       mode: INPUT_PULLUP
     resolution: 4
 
+  # Fan level 0..4
+  - platform: homeassistant
+    id: ha_fan_level
+    entity_id: sensor.helios_fan_level
+    internal: true
+
+  # Weather temps (floats in °C)
+  - platform: homeassistant
+    id: s_weather_temp
+    entity_id: sensor.openweathermap_temperature    
+    internal: true
+
+  - platform: homeassistant
+    id: s_weather_like
+    entity_id: sensor.openweathermap_feels_like_temperature  
+    internal: true
+
+  # Duct temps (0.1°C integers like your Arduino; if floats, see note below)
+  - platform: homeassistant
+    id: s_t_outdoor      # sensor_tAussen
+    entity_id: sensor.helios_ec_pro_aussenlufttemperatur 
+    internal: true
+  - platform: homeassistant
+    id: s_t_exhaust      # sensor_tFortluft
+    entity_id: sensor.helios_ec_pro_fortlufttemperatur            
+    internal: true
+  - platform: homeassistant
+    id: s_t_supply       # sensor_tZuluft
+    entity_id: sensor.helios_ec_pro_zulufttemperatur
+    internal: true
+  - platform: homeassistant
+    id: s_t_extract      # sensor_tAbluft
+    entity_id: sensor.helios_ec_pro_ablufttemperatur
+    internal: true
+
+
+globals:
+  - id: wifi_ok
+    type: bool
+    initial_value: 'false'
 
 text_sensor:
   - platform: wifi_info
@@ -86,9 +116,145 @@ display:
   - platform: ssd1306_i2c
     model: "SH1106 128x64"
     address: 0x3C
-    lambda: |-
-      it.print(0, 0, id(robotoM), "Hello, World!");
     rotation: 0
+    lambda: |-
+          lambda: |-
+      // ===== Global anchor/origin ============================================
+      const int OLED_W = 128, OLED_H = 64;
+      // 0=TopLeft, 1=TopRight, 2=BottomLeft, 3=BottomRight, 4=Center
+      const int ANCHOR = 0;
+      int base_x = 0, base_y = 0;
+      switch (ANCHOR) {
+        case 0: base_x = 0;          base_y = 0;          break;
+        case 1: base_x = OLED_W;     base_y = 0;          break;
+        case 2: base_x = 0;          base_y = OLED_H;     break;
+        case 3: base_x = OLED_W;     base_y = OLED_H;     break;
+        case 4: base_x = OLED_W/2;   base_y = OLED_H/2;   break;
+      }
+      const int gx = id(oled_offset_x).has_state() ? (int)id(oled_offset_x).state : 0;
+      const int gy = id(oled_offset_y).has_state() ? (int)id(oled_offset_y).state : 0;
+      const int ox = base_x + gx;
+      const int oy = base_y + gy;
+      auto ORIGIN = [&](int x, int y){ return std::pair<int,int>(ox + x, oy + y); };
+
+      // ===== Helpers ==========================================================
+      auto has  = [&](esphome::sensor::Sensor *s){ return s && s->has_state(); };
+      auto f1   = [&](esphome::sensor::Sensor *s){ return has(s) ? (float)s->state : NAN; };
+      auto print_4w_1d = [&](int x, int y, float val){
+        if (!isnan(val)) it.printf(x, y, id(font_s), "%4.1f", val);
+        else             it.printf(x, y, id(font_s), " -- ");
+      };
+      auto print_4w_1d_from_10x = [&](int x, int y, esphome::sensor::Sensor *s){
+        if (has(s)) it.printf(x, y, id(font_s), "%4.1f", s->state / 10.0f);
+        else        it.printf(x, y, id(font_s), " -- ");
+      };
+
+      // ===== Widget: Overview (Arduino refactor) ==============================
+      auto draw_overview = [&](int x, int y){
+        auto P = ORIGIN(x, y);
+        int sx = P.first, sy = P.second;
+
+        const int _Tx = 45;  // matches your original
+
+        // Left: weather temp
+        it.printf(sx + 6,  sy + 45, id(font_s), "%s", "");  // keep cursor step parity
+        print_4w_1d(sx + 6, sy + 45, f1(id(s_weather_temp)));
+
+        // "~" and feels-like
+        it.printf(sx + 0,  sy + 57, id(font_s), "~");
+        print_4w_1d(sx + 6, sy + 54, f1(id(s_weather_like)));
+
+        // Arrow (line + head chevron)
+        it.line (sx + (_Tx - 11), sy + 48, sx + (_Tx - 4), sy + 48);
+        it.line (sx + (_Tx - 4),  sy + 48, sx + (_Tx - 8), sy + 46);
+        it.line (sx + (_Tx - 4),  sy + 48, sx + (_Tx - 8), sy + 50);
+
+        // Small box (replace rounded rect with normal rect), black bar, tiny chevron
+        it.rectangle         (sx + (_Tx + 30), sy + 48, 16, 11);
+        it.filled_rectangle  (sx + (_Tx + 30), sy + 48,  2, 10, COLOR_OFF);
+        it.line              (sx + (_Tx + 27), sy + 58, sx + (_Tx + 35), sy + 55);
+        it.line              (sx + (_Tx + 27), sy + 58, sx + (_Tx + 35), sy + 61);
+
+        // Four duct temps (two columns, two rows) — /10.0 like Arduino
+        print_4w_1d_from_10x(sx + _Tx,        sy + 45, id(s_t_outdoor));
+        print_4w_1d_from_10x(sx + _Tx,        sy + 54, id(s_t_exhaust));
+        print_4w_1d_from_10x(sx + _Tx + 50,   sy + 45, id(s_t_supply));
+        print_4w_1d_from_10x(sx + _Tx + 50,   sy + 54, id(s_t_extract));
+      };
+
+      // ===== Widget: FanBars ==================================================
+      auto draw_fanbars = [&](int x, int y, int level){
+        auto P = ORIGIN(x, y);
+        int sx = P.first, sy = P.second;
+        it.filled_rectangle(sx + 0,  sy + 38, 42, 3);
+        it.rectangle       (sx + 0,  sy + 28,  9,  8);
+        it.rectangle       (sx + 11, sy + 20,  9, 16);
+        it.rectangle       (sx + 22, sy + 12,  9, 24);
+        it.rectangle       (sx + 33, sy +  4,  9, 32);
+        if (level > 0) it.filled_rectangle(sx + 0,  sy + 28, 9,  8);
+        if (level > 1) it.filled_rectangle(sx + 11, sy + 20, 9, 16);
+        if (level > 2) it.filled_rectangle(sx + 22, sy + 12, 9, 24);
+        if (level > 3) it.filled_rectangle(sx + 33, sy +  4, 9, 32);
+        it.printf(sx + 1, sy + 37, id(font_s), COLOR_OFF, "momomomo");
+      };
+
+      // ===== Widget: Wi-Fi status (OK/OFF) ====================================
+      auto draw_wifi = [&](int x, int y){
+        auto P = ORIGIN(x, y);
+        int sx = P.first, sy = P.second;
+        if (id(wifi_ok)) {
+          it.printf(sx, sy, id(font_b), "WiFi: OK");
+        } else {
+          it.filled_rectangle(sx, sy, 90, 18);
+          it.printf(sx + 2, sy + 0, id(font_b), COLOR_OFF, "WiFi: OFF");
+        }
+      };
+
+      // ===== Widget: IP =======================================================
+      auto draw_ip = [&](int x, int y){
+        auto P = ORIGIN(x, y);
+        int sx = P.first, sy = P.second;
+        if (id(ip_addr).has_state() && !id(ip_addr).state.empty()) {
+          it.printf(sx, sy, id(font_s), "IP %s", id(ip_addr).state.c_str());
+        } else {
+          it.printf(sx, sy, id(font_s), "IP --");
+        }
+      };
+
+      // ===== Widget: Title (invert bar) ======================================
+      auto draw_title = [&](int x, int y){
+        auto P = ORIGIN(x, y);
+        int sx = P.first, sy = P.second;
+        const char* t = id(title_text).has_state() ? id(title_text).state.c_str() : "OLED";
+        it.filled_rectangle(sx, sy, 128, 12);
+        it.printf(sx + 2, sy + 0, id(font_s), COLOR_OFF, "%s", t);
+      };
+
+      // ===== Resolve data/positions ==========================================
+      const int fan_level = id(ha_fan_level).has_state() ? (int)id(ha_fan_level).state : 0;
+
+      const int x0 = id(w0_x).has_state() ? (int)id(w0_x).state : 0;
+      const int y0 = id(w0_y).has_state() ? (int)id(w0_y).state : 0;
+
+      const int x1 = id(w1_x).has_state() ? (int)id(w1_x).state : 0;
+      const int y1 = id(w1_y).has_state() ? (int)id(w1_y).state : 0;
+
+      const int x2 = id(w2_x).has_state() ? (int)id(w2_x).state : 0;
+      const int y2 = id(w2_y).has_state() ? (int)id(w2_y).state : 0;
+
+      const int x3 = id(w3_x).has_state() ? (int)id(w3_x).state : 0;
+      const int y3 = id(w3_y).has_state() ? (int)id(w3_y).state : 0;
+
+      const int x5 = id(w5_x).has_state() ? (int)id(w5_x).state : 0;
+      const int y5 = id(w5_y).has_state() ? (int)id(w5_y).state : 0;
+
+      // ===== Draw (z-order = this order) ======================================
+      if (id(w5_title_en).state)   draw_title (x5, y5);
+      if (id(w2_wifi_en).state)    draw_wifi  (x2, y2);
+      if (id(w3_ip_en).state)      draw_ip    (x3, y3);
+      if (id(w1_fanbars_en).state) draw_fanbars(x1, y1, fan_level);
+      if (id(w0_overview_en).state)draw_overview(x0, y0);
+
 
 
 
@@ -109,4 +275,147 @@ font:
   - file: "gfonts://Roboto"
     id: robotoXXL
     size: 28
+    
+
+
+# -------- WIDGET TOGGLES -------------------------------------------------------
+switch:
+  - platform: template
+    id: w0_overview_en
+    name: "W0 Overview Enable"
+    restore_state: true
+    optimistic: true
+  - platform: template
+    id: w1_fanbars_en
+    name: "W1 FanBars Enable"
+    restore_state: true
+    optimistic: true
+  - platform: template
+    id: w2_wifi_en
+    name: "W2 WiFi Status Enable"
+    restore_state: true
+    optimistic: true
+  - platform: template
+    id: w3_ip_en
+    name: "W3 IP Address Enable"
+    restore_state: true
+    optimistic: true
+  - platform: template
+    id: w5_title_en
+    name: "W5 Title Enable"
+    restore_state: true
+    optimistic: true
+
+# -------- GLOBAL & PER-WIDGET OFFSETS -----------------------------------------
+number:
+  # Global nudge (moves ALL widgets at once)
+  - platform: template
+    id: oled_offset_x
+    name: "OLED Global Offset X"
+    min_value: -64
+    max_value: 64
+    step: 1
+    restore_value: true
+    initial_value: 0
+  - platform: template
+    id: oled_offset_y
+    name: "OLED Global Offset Y"
+    min_value: -32
+    max_value: 32
+    step: 1
+    restore_value: true
+    initial_value: 0
+
+  # W0 Overview
+  - platform: template
+    id: w0_x
+    name: "W0 Overview X"
+    min_value: -64
+    max_value: 64
+    step: 1
+    restore_value: true
+    initial_value: 0
+  - platform: template
+    id: w0_y
+    name: "W0 Overview Y"
+    min_value: -32
+    max_value: 32
+    step: 1
+    restore_value: true
+    initial_value: -2
+
+  # W1 FanBars
+  - platform: template
+    id: w1_x
+    name: "W1 FanBars X"
+    min_value: -64
+    max_value: 64
+    step: 1
+    restore_value: true
+    initial_value: 0
+  - platform: template
+    id: w1_y
+    name: "W1 FanBars Y"
+    min_value: -32
+    max_value: 32
+    step: 1
+    restore_value: true
+    initial_value: 0
+
+  # W2 WiFi
+  - platform: template
+    id: w2_x
+    name: "W2 WiFi X"
+    min_value: -64
+    max_value: 64
+    step: 1
+    restore_value: true
+    initial_value: -38
+  - platform: template
+    id: w2_y
+    name: "W2 WiFi Y"
+    min_value: -32
+    max_value: 32
+    step: 1
+    restore_value: true
+    initial_value: -20
+
+  # W3 IP
+  - platform: template
+    id: w3_x
+    name: "W3 IP X"
+    min_value: -64
+    max_value: 64
+    step: 1
+    restore_value: true
+    initial_value: -38
+  - platform: template
+    id: w3_y
+    name: "W3 IP Y"
+    min_value: -32
+    max_value: 32
+    step: 1
+    restore_value: true
+    initial_value: -6
+
+  # W5 Title
+  - platform: template
+    id: w5_x
+    name: "W5 Title X"
+    min_value: -64
+    max_value: 64
+    step: 1
+    restore_value: true
+    initial_value: 0
+  - platform: template
+    id: w5_y
+    name: "W5 Title Y"
+    min_value: -32
+    max_value: 32
+    step: 1
+    restore_value: true
+    initial_value: -32
+
+
+
     

@@ -2,9 +2,20 @@ esphome:
   name: helios-display-esp8266
   friendly_name: Helios Display esp8266
 
+##################################################################################
+## Hardware Configuration
 esp8266:
   board: d1_mini
+i2c:
+  sda: D2
+  scl: D1
+  scan: true
+  frequency: 100kHz
 
+
+
+##################################################################################
+## Home assistant Configuration
 # Enable logging
 logger:
 
@@ -27,4 +38,75 @@ wifi:
     password: "momo1234"
 
 captive_portal:
+
+##################################################################################
+## home assistant sensors
+
+binary_sensor:
+  - platform: gpio
+    pin:
+      number: D7
+      mode: INPUT_PULLUP
+      inverted: true
+    name: "Encoder Button"
+    id: encoder_button
+
+sensor:
+  - platform: wifi_signal
+    name: "WiFi RSSI"
+    id: wifi_rssi
+    update_interval: 15s
+
+  - platform: uptime
+    name: "Uptime Seconds"
+    id: uptime_s
+
+  - platform: rotary_encoder
+    name: "Rotary Encoder"
+    id: my_encoder
+    internal: true          # hide from HA; remove if you want the value exposed
+    pin_a:
+      number: D5
+      mode: INPUT_PULLUP
+    pin_b:
+      number: D6
+      mode: INPUT_PULLUP
+    resolution: 4
+
+
+text_sensor:
+  - platform: wifi_info
+    ip_address:
+      name: "Device IP"
+      id: ip_addr
+
+##################################################################################
+# OLED display — SH1106 (I²C)
+display:
+  - platform: ssd1306_i2c
+    model: "SH1106 128x64"
+    address: 0x3C
+    lambda: |-
+      it.print(0, 0, id(robotoM), "Hello, World!");
+    rotation: 0
+
+
+
+##################################################################################
+font:
+  - file: "gfonts://Roboto"
+    id: robotoS
+    size: 10
+  - file: "gfonts://Roboto"
+    id: robotoM
+    size: 12
+  - file: "gfonts://Roboto"
+    id: robotoL
+    size: 15
+  - file: "gfonts://Roboto"
+    id: robotoXL
+    size: 20
+  - file: "gfonts://Roboto"
+    id: robotoXXL
+    size: 28
     

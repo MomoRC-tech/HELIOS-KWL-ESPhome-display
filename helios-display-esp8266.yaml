@@ -118,7 +118,6 @@ display:
     address: 0x3C
     rotation: 0
     lambda: |-
-          lambda: |-
       // ===== Global anchor/origin ============================================
       const int OLED_W = 128, OLED_H = 64;
       // 0=TopLeft, 1=TopRight, 2=BottomLeft, 3=BottomRight, 4=Center
@@ -264,13 +263,13 @@ font:
     id: robotoS
     size: 10
   - file: "gfonts://Roboto"
-    id: robotoM
+    id: font_s
     size: 12
   - file: "gfonts://Roboto"
     id: robotoL
     size: 15
   - file: "gfonts://Roboto"
-    id: robotoXL
+    id: font_b
     size: 20
   - file: "gfonts://Roboto"
     id: robotoXXL
@@ -283,27 +282,27 @@ switch:
   - platform: template
     id: w0_overview_en
     name: "W0 Overview Enable"
-    restore_state: true
+    restore_mode: RESTORE_DEFAULT_ON
     optimistic: true
   - platform: template
     id: w1_fanbars_en
     name: "W1 FanBars Enable"
-    restore_state: true
+    restore_mode: RESTORE_DEFAULT_ON
     optimistic: true
   - platform: template
     id: w2_wifi_en
     name: "W2 WiFi Status Enable"
-    restore_state: true
+    restore_mode: RESTORE_DEFAULT_ON
     optimistic: true
   - platform: template
     id: w3_ip_en
     name: "W3 IP Address Enable"
-    restore_state: true
+    restore_mode: RESTORE_DEFAULT_ON
     optimistic: true
   - platform: template
     id: w5_title_en
     name: "W5 Title Enable"
-    restore_state: true
+    restore_mode: RESTORE_DEFAULT_ON
     optimistic: true
 
 # -------- GLOBAL & PER-WIDGET OFFSETS -----------------------------------------

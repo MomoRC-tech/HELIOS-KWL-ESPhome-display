@@ -1,6 +1,20 @@
 esphome:
   name: helios-display-esp8266
   friendly_name: Helios Display esp8266
+  on_boot:
+    priority: -10
+    then:
+      - lambda: |-
+          // If HA already has a level, use it as baseline preselect
+          if (id(ha_fan_level).has_state()) {
+            int lvl = (int) (id(ha_fan_level).state + 0.5f);
+            if (lvl < 0) lvl = 0; if (lvl > 4) lvl = 4;
+            // If auto is active, start at -1, else at current manual level
+            bool is_auto = id(ha_auto).has_state() ? (id(ha_auto).state > 0.5f) : false;
+            id(preselect_level) = is_auto ? -1 : lvl;
+          } else {
+            id(preselect_level) = 0;
+          }
 
 esp8266:
   board: d1_mini
@@ -36,7 +50,7 @@ i2c:
   sda: D2
   scl: D1
   scan: true
-  frequency: 100kHz
+  frequency: 400kHz
 
 ##################################################################################
 ## home assistant sensors
@@ -50,11 +64,25 @@ binary_sensor:
     name: "Encoder Button"
     id: encoder_button
 
+  - platform: homeassistant
+    id: filter_alert
+    entity_id: binary_sensor.helios_ec_pro_filterwechsel_erforderlich    
+
+    # Are we connected to Home Assistant via ESPHome API?
+  - platform: status
+    id: ha_connected
+
+  # Auto mode activ
+  - platform: homeassistant
+    id: ha_auto
+    entity_id: binary_sensor.helios_ec_pro_automatikmodus_aktiv
+
 sensor:
   # Rotary encoder
   - platform: rotary_encoder
     name: "Rotary Encoder"
     id: my_encoder
+    publish_initial_value: false # avoid an initial bogus event on boot
     pin_a:
       number: D5
       mode: INPUT_PULLUP
@@ -62,6 +90,31 @@ sensor:
       number: D6
       mode: INPUT_PULLUP
     resolution: 4
+    on_clockwise:
+      then:
+        - lambda: |-
+            unsigned long now = millis();
+            if (now - (unsigned long)id(last_step_ms) < (unsigned long)id(step_guard_ms)) return;  // guard
+            id(last_step_ms) = now;
+
+            id(preselect_level) += id(enc_step);
+            if (id(preselect_level) > 4)  id(preselect_level) = 4;  // clamp -1..4
+            id(overlay_visible) = true;
+            id(last_change_ms) = now;
+            ESP_LOGD("encoder", "CW: preselect=%d", id(preselect_level));
+
+    on_anticlockwise:
+      then:
+        - lambda: |-
+            unsigned long now = millis();
+            if (now - (unsigned long)id(last_step_ms) < (unsigned long)id(step_guard_ms)) return;  // guard
+            id(last_step_ms) = now;
+
+            id(preselect_level) -= id(enc_step);
+            if (id(preselect_level) < -1) id(preselect_level) = -1; // clamp -1..4
+            id(overlay_visible) = true;
+            id(last_change_ms) = now;
+            ESP_LOGD("encoder", "CCW: preselect=%d", id(preselect_level));
 
   # Fan level 0..4
   - platform: homeassistant
@@ -97,18 +150,77 @@ sensor:
     entity_id: sensor.helios_ec_pro_ablufttemperatur
     internal: true
 
-
 globals:
   - id: wifi_ok
     type: bool
     initial_value: 'false'
+
+  - id: blink_on         # toggled once per second for flashing icons
+    type: bool
+    initial_value: 'false'
+
+  - id: preselect_level # encoder-selected preview level (-1..4)
+    type: int
+    initial_value: '0'
+
+  - id: enc_step # adjustable step per encoder movement
+    type: int
+    initial_value: '1' # change to 2/3/etc if you want bigger jumps
+
+  - id: overlay_visible # draw 60x60 overlay while previewing
+    type: bool
+    initial_value: 'false'
+
+  - id: last_change_ms # millis() timestamp of last encoder movement
+    type: long long
+    initial_value: '0'
+  - id: last_step_ms
+    type: long
+    initial_value: '0'
+  - id: step_guard_ms
+    type: int
+    initial_value: '80' # ignore additional steps within 80 ms
+
+interval:
+  - interval: 1s
+    then:
+      - lambda: |-
+          id(blink_on) = !id(blink_on);
+
+  - interval: 200ms
+    then:
+      - if:
+          condition:
+            lambda: 'return id(overlay_visible) && (millis() - (unsigned long)id(last_change_ms) >= 2000UL);'
+          then:
+            - lambda: 'id(overlay_visible) = false;'
+            - if:
+                condition:
+                  lambda: 'return id(preselect_level) < 0;'
+                then:
+                  - homeassistant.service:
+                      service: helios_pro_ventilation.set_auto_mode
+                      data:
+                        enabled: "true"
+                else:
+                  - homeassistant.service:
+                      service: helios_pro_ventilation.set_auto_mode
+                      data:
+                        enabled: "false"
+                  - homeassistant.service:
+                      service: helios_pro_ventilation.set_fan_level
+                      data:
+                        level: !lambda |-
+                          int v = (int)round(id(preselect_level));
+                          if (v < 0) v = 0;
+                          if (v > 4) v = 4;
+                          return v;
 
 text_sensor:
   - platform: wifi_info
     ip_address:
       name: "Device IP"
       id: ip_addr
-
 
 
 # OLED display — SH1106 (I²C)
@@ -118,6 +230,7 @@ display:
     address: 0x3C
     contrast: 60% 
     rotation: 0
+    update_interval: 500ms   
     lambda: |-
       // ===== Helpers ==========================================================
         // For TEXT sensors
@@ -136,14 +249,6 @@ display:
           it.printf(x, y, F, "--");
       };
 
-      // convert fan level
-      //int lvl = 0;
-      //if (id(ha_fan_level).has_state()) {
-      //  float raw = id(ha_fan_level).state;   // e.g., 0..4
-      //  lvl = (int)roundf(raw);
-      //  if (lvl < 0) lvl = 0;
-      //  if (lvl > 4) lvl = 4;
-      //}
 
       // --------------------------------------------//
       // --------------------------------------------//
@@ -153,29 +258,30 @@ display:
       auto draw_weather = [&](int x, int y){  
 
         // weather real temp
-        print_num(x + 14,  y + 10, id(s_weather_temp), "", robotoL);
+        print_num(x + 12,  y + 10, id(s_weather_temp), "", id(robotoL));
 
         // weather feels-like
         it.printf(x + 0,  y + 30, id(robotoL), "~");
-        print_num(x + 10,  y + 26, id(s_weather_like), "", robotoXL);
-        it.printf(x + 0,   y + 6, id(robotoM), "°C");
+        print_num(x + 10,  y + 26, id(s_weather_like), "", id(robotoXL));
+        it.printf(x + 42,  y + 14, id(robotoS), "°C");
       };
 
       // ===== Widget: temperatures KWL   ===================
       auto draw_kwltemp = [&](int x, int y){  
-        // it.printf(x + 0,    y + 45, id(sym_10), "🡒");
-        print_num(x + 1,   y + 45, id(s_t_outdoor), "", robotoS); //1
-        print_num(x + 30,   y + 45, id(s_t_supply),  "", robotoS); //2
-        it.printf(x + 55,   y + 43, id(sym_12), "⎔"); 
-        print_num(x + 74,   y + 45, id(s_t_extract), "", robotoS); //3        
-        print_num(x + 102,  y + 45, id(s_t_exhaust), "", robotoS); //4
-        // it.printf(x + 140,  y + 45, id(sym_10), "🡒");
+        it.line   (x - 20,    y + 3, x + 160, y + 3);
+        print_num (x + 1,     y + 5, id(s_t_outdoor), "", id(robotoS)); //1
+        print_num (x + 30,    y + 5, id(s_t_supply),  "", id(robotoS)); //2
+        it.printf (x + 55,    y + 3, id(sym_12), "⎔"); 
+        print_num (x + 74,    y + 5, id(s_t_extract), "", id(robotoS)); //3        
+        print_num (x + 102,   y + 5, id(s_t_exhaust), "", id(robotoS)); //4
+        //it.printf(x + 140,  y + 5, id(sym_10), "🡒");
       };
-
+  
+      
       // ===== Widget: FanBars ==================================================
-      auto draw_fanbars = [&](int x, int y, int level){
+      auto draw_fanbars = [&](int x, int y, int level, bool is_auto){
         it.rectangle       (x + 0,  y + 12,  9,  12);
-        it.rectangle       (x + 11, y + 8,  9,  16);
+        it.rectangle       (x + 11, y + 8,   9,  16);
         it.rectangle       (x + 22, y + 4,   9,  20);
         it.rectangle       (x + 33, y + 0,   9,  24);
         if (level > 0) it.filled_rectangle(x + 0,  y + 12, 9, 12);
@@ -185,40 +291,130 @@ display:
         // it.filled_rectangle(x + 0,  y + 38, 42, 3);
         // it.printf(x + 1, y + 27, id(robotoS), COLOR_OFF, "momomomo");
 
-        it.printf(x + 0, y + 0, id(robotoS), "AUTO");
 
+        it.printf(x + 0, y - 13, id(robotoM), is_auto ? "AUTO" : "");
       };
 
-      const int xf = 85;
-      const int yf = 18;
+      // ===== Widget: Icons ==================================================
+      // ----- 16x16 ICON: Wi-Fi (on/off) -----
+      auto draw_wifi_icon_16 = [&](int x, int y, bool on){
+        // Baseline + 3 "arcs" approximated with short lines
+        // Center dot
+        it.filled_circle(x + 8, y + 12, 1);
+        // Small "arc"
+        it.line(x + 6, y + 10, x + 10, y + 10);
+        // Medium "arc"
+        it.line(x + 5, y + 8,  x + 11, y + 8);
+        // Large "arc"
+        it.line(x + 3, y + 6,  x + 13, y + 6);
+
+        if (!on) {
+          // Draw a slash to indicate "off"
+          it.line(x + 2, y + 2, x + 14, y + 14);
+        }
+      };
+
+      // ----- 16x16 ICON: HA/API (house) (on/off) -----
+      auto draw_ha_icon_16 = [&](int x, int y, bool on){
+        bool visible = on ? true : id(blink_on);
+        if (!visible) return;
+        
+        // House roof: small triangle
+        it.triangle(x + 2, y + 8,  x + 8, y + 2,  x + 14, y + 8);
+        // House body: rectangle
+        it.rectangle(x + 4, y + 8,  8, 6);
+        // “Heartbeat” dot inside the house (only when on)
+        if (id(blink_on)) it.filled_circle(x + 8, y + 11, 1);
+      };
+
+      // ----- 16x16 ICON: Filter change (alert) -----
+      auto draw_filter_icon_16 = [&](int x, int y, bool alert){
+        bool visible = (alert && !(id(blink_on)));
+        if (!visible) return;
+
+        it.rectangle(x, y + 1,  11, 14);
+        it.printf(x + 2,  y + 1, id(robotoM), "F");
+      };
+
+      // ==================================================================
+      // ===== Overlay widget (60x60) =====================================
+      auto draw_overlay = [&](int x, int y){
+        // Frame 60x60
+        it.filled_rectangle(x, y, 60, 60, Color::BLACK);
+        it.rectangle(x, y, 60, 60);
+        // Title bar
+        it.filled_rectangle(x, y, 60, 12);
+        it.printf(x + 3, y + 2, id(robotoM), COLOR_OFF, "Set");
+
+        // Big value in center
+        const int lvl = id(preselect_level);
+        if (lvl < 0) {
+          it.printf(x + 10, y + 28, id(robotoL), "AUTO");
+        } else {
+          it.printf(x + 26, y + 28, id(robotoXL), "%d", lvl);
+        }
+
+        // Small hint text at bottom
+        it.printf(x + 4, y + 48, id(robotoS), "2s=OK");
+      };  
+      
+
+      // ================================================================
+      // ===== DRAWING ==================================================
+      
+      bool is_auto = id(ha_auto).has_state() ? id(ha_auto).state : false;
+
+      const int xf = 72;
+      const int yf = 20;
+      draw_fanbars(xf, yf, (int)id(ha_fan_level).state, is_auto);
 
       const int xt1 = 2;
-      const int yt1 = 7;
+      const int yt1 = 47;
+      draw_kwltemp(xt1, yt1);
 
       const int xw = 0; 
       const int yw = 0;
-
-      draw_fanbars(xf, yf, (int)id(ha_fan_level).state);
-      draw_kwltemp(xt1, yt1);
       draw_weather(xw, yw);
+
+      // ----- determine connection states safely -----
+      bool wifi_is_ok = id(wifi_ok);  // your global from wifi on_connect/on_disconnect
+      bool ha_is_ok   = (id(ha_connected).has_state()) ? id(ha_connected).state : false;
+      bool filter_is_alert = (id(filter_alert).has_state()) ? id(filter_alert).state : false;
+
+      // ----- place icons (top-right) -----
+      const int x_icon1 = (128-16-10);
+      const int y_icon1 = 0;
+      // draw_wifi_icon_16(x_icon1, y_icon1, wifi_is_ok);      // turned off
+      draw_filter_icon_16(x_icon1, y_icon1, filter_is_alert);
+
+      const int x_icon2 = (128-16);
+      const int y_icon2 = 0;
+      draw_ha_icon_16  (x_icon2, y_icon2, ha_is_ok);     
+
+      // ----- encoder overlay -----
+      if (id(overlay_visible)) {
+        draw_overlay(0, 0);  
+      }
+      
+
 
 font:
   - file: "gfonts://Roboto"
     id: robotoS
     size: 10
-    glyphs: " 0123456789.-°%:/ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz~<>"
+    glyphs: " 0123456789.-°%:/ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz~<>="
   - file: "gfonts://Roboto"
     id: robotoM
     size: 12
-    glyphs: " 0123456789.-°%:/ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz~<>"
+    glyphs: " 0123456789.-°%:/ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz~<>="
   - file: "gfonts://Roboto"
     id: robotoL
     size: 15
-    glyphs: " 0123456789.-°%:/ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz~<>"
+    glyphs: " 0123456789.-°%:/ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz~<>="
   - file: "gfonts://Roboto"
     id: robotoXL
     size: 20
-    glyphs: " 0123456789.-°%:/ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz~<>"
+    glyphs: " 0123456789.-°%:/ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz~<>="
 
   # Symbols font (arrows, triangles, checkmarks)
   - id: sym_10
@@ -228,4 +424,8 @@ font:
   - id: sym_12
     file: "gfonts://Noto Sans Symbols 2"
     size: 12
-    glyphs: "▲▶▼◀✓✗🠊🠶🆭⏩▦🡒⎔🠘"
+    glyphs: "🠊🠶🆭⏩▦🡒⎔🠘"
+  - id: sym_16
+    file: "gfonts://Noto Sans Symbols 2"
+    size: 16
+    glyphs: "✓✗🠊🠶🆭⏩▦🡒⎔🠘"

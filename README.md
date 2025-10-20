@@ -1,12 +1,10 @@
 # HELIOS-KWL-ESPhome-display
 
-This project is based on my [Helios EC Pro Home Assistant integration](https://github.com/MomoRC-tech/helios-ec-pro-homeassistant).
+An ESPHome-based display and control interface for HELIOS KWL EC 270/370 Pro (<2014) ventilation systems, featuring a 1.3" SH1106 OLED, rotary encoder, and Home Assistant integration.
+
+This project is based on my [Helios EC Pro Home Assistant integration](https://github.com/MomoRC-tech/helios-ec-pro-homeassistant), have a look.
 
 **Note:** The Home Assistant entity names in the configuration (YAML) may need to be changed to match your own setup. Please adjust the entity IDs to those used in your Home Assistant instance.
-
-# HELIOS-KWL-ESPhome-display
-
-An ESPHome-based display and control interface for HELIOS KWL ventilation systems, featuring a 1.3" SH1106 OLED, rotary encoder, and Home Assistant integration.
 
 ## Features
 
@@ -19,7 +17,7 @@ An ESPHome-based display and control interface for HELIOS KWL ventilation system
 
 ## Hardware
 
-- ESP8266 (D1 Mini recommended)
+- ESP8266 (eg. ESP8266 D1 Mini)
 - SH1106 128x64 OLED display (I2C, SDA=D2, SCL=D1)
 - Rotary encoder (A=D5, B=D6, Button=D7)
 

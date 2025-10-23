@@ -89,7 +89,7 @@ sensor:
     pin_b:
       number: D6
       mode: INPUT_PULLUP
-    resolution: 4
+    resolution: 1
     on_clockwise:
       then:
         - lambda: |-
